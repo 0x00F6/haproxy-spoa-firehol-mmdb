@@ -1,0 +1,55 @@
+services:
+  spoa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: haproxy-spoa-firehol-mmdb:latest
+    container_name: spoa
+    restart: unless-stopped
+    cap_add:
+      - SYS_NICE
+      - PERFMON
+      - SYS_RESOURCE
+    environment:
+      - MMDB_PATH=/data/firehol.mmdb
+      - FIREHOL_GIT_PATH=/data/firehol-blocklist-ipsets
+      - SERVER_LISTEN_ADDRESS=0.0.0.0:9000
+      - METRICS_LISTEN_ADDRESS=0.0.0.0:9100
+      - DROP_BY_CATEGORY=unroutable,abuse
+    volumes:
+      # Mount the directory, not the file: the generator publishes the MMDB
+      # with an atomic rename, which cannot replace a bind-mounted file, and
+      # inotify must see the replacement. The Git checkout persists there too.
+      - ./data:/data
+    ports:
+      - "9000:9000"
+      - "9100:9100"
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z -w1 \"$${SERVER_LISTEN_ADDRESS%%:*}\" \"$${SERVER_LISTEN_ADDRESS##*:}\"" ]
+      interval: 15s
+      timeout: 2s
+      retries: 150 # 5min
+      start_period: 2s
+    networks:
+      - proxy
+
+
+  haproxy:
+    image: haproxy:3.4-alpine
+    container_name: haproxy
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "8404:8404"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy/haproxy-spoa-ip-reputation-firehol.cfg:/usr/local/etc/haproxy/haproxy-spoa-ip-reputation-firehol.cfg:ro
+    depends_on:
+      spoa:
+        condition: service_healthy
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    driver: bridge

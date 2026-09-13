@@ -1,0 +1,44 @@
+# Build directories
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+
+# External dependency build cache (Seastar / libmaxminddb sources and builds)
+.cache/
+
+# Compiled binaries
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dylib
+*.dll
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CLion
+*.iml
+out/
+*.mmdb
+build-debug
+build-*/
+firehol-blocklist-ipsets/
+data/
+
+# Backups
+*.bak
+*.mmdb.tmp.*

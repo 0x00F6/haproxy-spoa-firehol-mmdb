@@ -1,0 +1,7 @@
+# Only source files and Git version metadata are needed by the Dockerfile.
+.cache/
+build/
+cmake-build*/
+.idea/
+*.mmdb
+firehol.mmdb.tar.gz

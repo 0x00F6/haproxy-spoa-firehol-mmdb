@@ -1,0 +1,1842 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="2400" height="902" onload="init(evt)" viewBox="0 0 2400 902" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="2400.0" height="902.0" fill="url(#background)"  />
+<text id="title" x="1200.00" y="24" >Seastar server CPU flamegraph</text>
+<text id="details" x="10.00" y="885" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="2290.00" y="24" >Search</text>
+<text id="ignorecase" x="2374.00" y="24" >ic</text>
+<text id="matched" x="2290.00" y="885" > </text>
+<g id="frames">
+<g >
+<title>~vector (1 samples, 0.03%)</title><rect x="1090.9" y="229" width="0.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1093.91" y="239.5" ></text>
+</g>
+<g >
+<title>seastar::pollable_fd_state::recv_some (5 samples, 0.15%)</title><rect x="1040.8" y="581" width="3.6" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1043.83" y="591.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::readable (2 samples, 0.06%)</title><rect x="1043.0" y="533" width="1.4" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1045.98" y="543.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel_arch_end (10 samples, 0.30%)</title><rect x="1182.5" y="661" width="7.1" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1185.47" y="671.5" ></text>
+</g>
+<g >
+<title>__invoke_impl&lt;seastar::future&lt;seastar::bool_class&lt;seastar::stop_iteration_tag&gt; &gt;, (anonymous namespace)::process_one_frame (66 samples, 1.98%)</title><rect x="1045.8" y="597" width="47.3" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="1048.84" y="607.5" >__in..</text>
+</g>
+<g >
+<title>_M_allocate (2 samples, 0.06%)</title><rect x="1049.4" y="405" width="1.4" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1052.42" y="415.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::reap_kernel_completions (1 samples, 0.03%)</title><rect x="1193.2" y="725" width="0.7" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1196.20" y="735.5" ></text>
+</g>
+<g >
+<title>~temporary_buffer (1 samples, 0.03%)</title><rect x="1091.6" y="517" width="0.7" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1094.62" y="527.5" ></text>
+</g>
+<g >
+<title>~_Move_assign_base (1 samples, 0.03%)</title><rect x="1090.9" y="453" width="0.7" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="1093.91" y="463.5" ></text>
+</g>
+<g >
+<title>get_uint32 (13 samples, 0.39%)</title><rect x="1072.3" y="389" width="9.3" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1075.31" y="399.5" ></text>
+</g>
+<g >
+<title>__uninitialized_copy_a&lt;std::move_iterator&lt;unsigned char*&gt;, std::move_iterator&lt;unsigned char*&gt;, unsigned char*, unsigned char&gt; (1 samples, 0.03%)</title><rect x="1051.6" y="389" width="0.7" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1054.56" y="399.5" ></text>
+</g>
+<g >
+<title>seastar::internal::promise_base::promise_base (1 samples, 0.03%)</title><rect x="1042.3" y="533" width="0.7" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1045.26" y="543.5" ></text>
+</g>
+<g >
+<title>futurize_invoke&lt;(anonymous namespace)::handle_connection (5 samples, 0.15%)</title><rect x="1040.8" y="693" width="3.6" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="1043.83" y="703.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (2 samples, 0.06%)</title><rect x="1115.9" y="693" width="1.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1118.95" y="703.5" ></text>
+</g>
+<g >
+<title>invoke&lt;(anonymous namespace)::process_one_frame (66 samples, 1.98%)</title><rect x="1045.8" y="629" width="47.3" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="1048.84" y="639.5" >invo..</text>
+</g>
+<g >
+<title>recv (12 samples, 0.36%)</title><rect x="1105.2" y="693" width="8.6" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="1108.21" y="703.5" ></text>
+</g>
+<g >
+<title>_M_find_before_node_tr&lt;std::basic_string_view&lt;char&gt; &gt; (1 samples, 0.03%)</title><rect x="1058.7" y="357" width="0.7" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1061.72" y="367.5" ></text>
+</g>
+<g >
+<title>flush (3 samples, 0.09%)</title><rect x="1083.8" y="373" width="2.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1086.75" y="383.5" ></text>
+</g>
+<g >
+<title>_M_find_tr&lt;std::basic_string_view&lt;char&gt; &gt; (1 samples, 0.03%)</title><rect x="1058.7" y="389" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1061.72" y="399.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.03%)</title><rect x="1193.9" y="725" width="0.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1196.92" y="735.5" ></text>
+</g>
+<g >
+<title>operator new (1 samples, 0.03%)</title><rect x="1085.9" y="389" width="0.7" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1088.90" y="399.5" ></text>
+</g>
+<g >
+<title>__vsnprintf_internal (1 samples, 0.03%)</title><rect x="1056.6" y="389" width="0.7" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="1059.57" y="399.5" ></text>
+</g>
+<g >
+<title>make_deleter&lt;spoe::SpoaAgent::send_frame (1 samples, 0.03%)</title><rect x="1083.0" y="453" width="0.8" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="1086.04" y="463.5" ></text>
+</g>
+<g >
+<title>run_and_dispose (77 samples, 2.31%)</title><rect x="1040.8" y="709" width="55.1" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1043.83" y="719.5" >run_a..</text>
+</g>
+<g >
+<title>~future_base (2 samples, 0.06%)</title><rect x="1093.1" y="645" width="1.4" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1096.05" y="655.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::recv_some (5 samples, 0.15%)</title><rect x="1040.8" y="565" width="3.6" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1043.83" y="575.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.03%)</title><rect x="1137.4" y="677" width="0.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1140.41" y="687.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel_arch_end (10 samples, 0.30%)</title><rect x="1106.6" y="661" width="7.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1109.65" y="671.5" ></text>
+</g>
+<g >
+<title>reactor-5 (111 samples, 3.34%)</title><rect x="1692.5" y="837" width="79.4" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1695.52" y="847.5" >reactor-5</text>
+</g>
+<g >
+<title>fetch_add (1 samples, 0.03%)</title><rect x="1057.3" y="421" width="0.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1060.29" y="431.5" ></text>
+</g>
+<g >
+<title>lookup_ipv4 (31 samples, 0.93%)</title><rect x="1059.4" y="453" width="22.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1062.43" y="463.5" >l..</text>
+</g>
+<g >
+<title>get_if&lt;spoe::frame::HaproxyHello, spoe::frame::HaproxyHello, spoe::frame::HaproxyDisconnect, spoe::frame::Notify&gt; (1 samples, 0.03%)</title><rect x="1046.6" y="485" width="0.7" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1049.56" y="495.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1049.4" y="389" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1052.42" y="399.5" ></text>
+</g>
+<g >
+<title>__invoke&lt;seastar::input_stream&lt;char&gt;::read_exactly (1 samples, 0.03%)</title><rect x="1094.5" y="613" width="0.7" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="1097.48" y="623.5" ></text>
+</g>
+<g >
+<title>operator delete (1 samples, 0.03%)</title><rect x="1090.9" y="37" width="0.7" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1093.91" y="47.5" ></text>
+</g>
+<g >
+<title>uninitialized_copy&lt;std::move_iterator&lt;unsigned char*&gt;, unsigned char*&gt; (1 samples, 0.03%)</title><rect x="1048.7" y="357" width="0.7" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="1051.70" y="367.5" ></text>
+</g>
+<g >
+<title>seastar::net::posix_data_sink_impl::put (23 samples, 0.69%)</title><rect x="1146.7" y="661" width="16.5" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1149.71" y="671.5" ></text>
+</g>
+<g >
+<title>__snprintf_chk (1 samples, 0.03%)</title><rect x="1056.6" y="405" width="0.7" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1059.57" y="415.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::switch_steady_clock_timers (8 samples, 0.24%)</title><rect x="1131.7" y="693" width="5.7" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="1134.68" y="703.5" ></text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1162.4" y="549" width="0.8" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1165.44" y="559.5" ></text>
+</g>
+<g >
+<title>destroy_at&lt;spoe::Message&gt; (1 samples, 0.03%)</title><rect x="1090.9" y="165" width="0.7" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1093.91" y="175.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (3 samples, 0.09%)</title><rect x="1191.1" y="661" width="2.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1194.06" y="671.5" ></text>
+</g>
+<g >
+<title>emplace_back&lt;unsigned char&gt; (1 samples, 0.03%)</title><rect x="1055.1" y="437" width="0.8" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1058.14" y="447.5" ></text>
+</g>
+<g >
+<title>increment (2 samples, 0.06%)</title><rect x="1057.3" y="437" width="1.4" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1060.29" y="447.5" ></text>
+</g>
+<g >
+<title>push_back (1 samples, 0.03%)</title><rect x="1055.1" y="453" width="0.8" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1058.14" y="463.5" ></text>
+</g>
+<g >
+<title>seastar::fair_queue::dispatch_requests (4 samples, 0.12%)</title><rect x="1163.9" y="693" width="2.8" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1166.87" y="703.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::syscall_pollfn::exit_interrupt_mode (1 samples, 0.03%)</title><rect x="1128.1" y="725" width="0.7" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="1131.11" y="735.5" ></text>
+</g>
+<g >
+<title>~temporary_buffer (1 samples, 0.03%)</title><rect x="1092.3" y="581" width="0.8" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1095.34" y="591.5" ></text>
+</g>
+<g >
+<title>_Destroy&lt;spoe::Message*&gt; (1 samples, 0.03%)</title><rect x="1090.9" y="197" width="0.7" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="1093.91" y="207.5" ></text>
+</g>
+<g >
+<title>operator new (2 samples, 0.06%)</title><rect x="1053.7" y="325" width="1.4" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1056.71" y="335.5" ></text>
+</g>
+<g >
+<title>operator=&lt;seastar::promise&lt;void&gt; &gt; (2 samples, 0.06%)</title><rect x="1083.8" y="357" width="1.4" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1086.75" y="367.5" ></text>
+</g>
+<g >
+<title>encode_to_vec (1 samples, 0.03%)</title><rect x="1053.0" y="437" width="0.7" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1055.99" y="447.5" ></text>
+</g>
+<g >
+<title>_M_range_insert&lt;char const*&gt; (5 samples, 0.15%)</title><rect x="1049.4" y="421" width="3.6" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="1052.42" y="431.5" ></text>
+</g>
+<g >
+<title>future_invoke&lt;seastar::input_stream&lt;char&gt;::read_exactly (1 samples, 0.03%)</title><rect x="1094.5" y="645" width="0.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1097.48" y="655.5" ></text>
+</g>
+<g >
+<title>satisfy_with_result_of&lt;seastar::future&lt;seastar::temporary_buffer&lt;char&gt; &gt;::then_impl_nrvo&lt;seastar::input_stream&lt;char&gt;::read_exactly (1 samples, 0.03%)</title><rect x="1094.5" y="677" width="0.7" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="1097.48" y="687.5" ></text>
+</g>
+<g >
+<title>find_address_in_search_tree (30 samples, 0.90%)</title><rect x="1060.1" y="421" width="21.5" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="1063.15" y="431.5" >f..</text>
+</g>
+<g >
+<title>tuple (1 samples, 0.03%)</title><rect x="1146.0" y="597" width="0.7" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1148.99" y="607.5" ></text>
+</g>
+<g >
+<title>seastar::simple_pollfn&lt;true&gt;::exit_interrupt_mode (2 samples, 0.06%)</title><rect x="1138.1" y="725" width="1.5" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1141.12" y="735.5" ></text>
+</g>
+<g >
+<title>then&lt;(anonymous namespace)::process_one_frame (65 samples, 1.95%)</title><rect x="1045.8" y="565" width="46.5" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="1048.84" y="575.5" >then..</text>
+</g>
+<g >
+<title>set_callback (1 samples, 0.03%)</title><rect x="1095.2" y="677" width="0.7" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1098.20" y="687.5" ></text>
+</g>
+<g >
+<title>_M_reset (1 samples, 0.03%)</title><rect x="1090.9" y="373" width="0.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1093.91" y="383.5" ></text>
+</g>
+<g >
+<title>set_urgent_state (2 samples, 0.06%)</title><rect x="1044.4" y="645" width="1.4" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1047.41" y="655.5" ></text>
+</g>
+<g >
+<title>operator (64 samples, 1.92%)</title><rect x="1045.8" y="517" width="45.8" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1048.84" y="527.5" >oper..</text>
+</g>
+<g >
+<title>reactor-13 (154 samples, 4.63%)</title><rect x="754.7" y="837" width="110.2" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="757.69" y="847.5" >reactor-13</text>
+</g>
+<g >
+<title>__distance&lt;char const*&gt; (1 samples, 0.03%)</title><rect x="1052.3" y="389" width="0.7" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1055.28" y="399.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel (15 samples, 0.45%)</title><rect x="1149.6" y="581" width="10.7" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1152.57" y="591.5" ></text>
+</g>
+<g >
+<title>then&lt;spoe::SpoaAgent::send_frame (3 samples, 0.09%)</title><rect x="1083.8" y="453" width="2.1" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="1086.75" y="463.5" ></text>
+</g>
+<g >
+<title>load (1 samples, 0.03%)</title><rect x="1081.6" y="437" width="0.7" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="1084.61" y="447.5" ></text>
+</g>
+<g >
+<title>_Construct&lt;unsigned char, unsigned char&gt; (1 samples, 0.03%)</title><rect x="1051.6" y="341" width="0.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1054.56" y="351.5" ></text>
+</g>
+<g >
+<title>seastar::schedule_urgent (2 samples, 0.06%)</title><rect x="1113.8" y="693" width="1.4" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1116.80" y="703.5" ></text>
+</g>
+<g >
+<title>operator (65 samples, 1.95%)</title><rect x="1045.8" y="581" width="46.5" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1048.84" y="591.5" >oper..</text>
+</g>
+<g >
+<title>forward_to (2 samples, 0.06%)</title><rect x="1044.4" y="661" width="1.4" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1047.41" y="671.5" ></text>
+</g>
+<g >
+<title>operator new (2 samples, 0.06%)</title><rect x="1049.4" y="341" width="1.4" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1052.42" y="351.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::system_clock::now (1 samples, 0.03%)</title><rect x="1194.6" y="741" width="0.8" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1197.63" y="751.5" ></text>
+</g>
+<g >
+<title>reactor-12 (200 samples, 6.01%)</title><rect x="611.6" y="837" width="143.1" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="614.62" y="847.5" >reactor-12</text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1048.0" y="341" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1050.99" y="351.5" ></text>
+</g>
+<g >
+<title>operator (71 samples, 2.13%)</title><rect x="1044.4" y="693" width="50.8" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1047.41" y="703.5" >opera..</text>
+</g>
+<g >
+<title>seastar::output_stream&lt;char&gt;::poll_flush (26 samples, 0.78%)</title><rect x="1144.6" y="709" width="18.6" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1147.56" y="719.5" ></text>
+</g>
+<g >
+<title>unsigned long seastar::smp_message_queue::process_queue&lt;2ul, seastar::smp_message_queue::process_incoming (1 samples, 0.03%)</title><rect x="1176.8" y="693" width="0.7" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="1179.75" y="703.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1089.5" y="405" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1092.48" y="415.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::try_sleep (31 samples, 0.93%)</title><rect x="1117.4" y="741" width="22.2" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1120.38" y="751.5" >s..</text>
+</g>
+<g >
+<title>_M_equals (1 samples, 0.03%)</title><rect x="1058.0" y="357" width="0.7" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1061.00" y="367.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::signals::poll_signal (1 samples, 0.03%)</title><rect x="1125.2" y="709" width="0.8" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1128.24" y="719.5" ></text>
+</g>
+<g >
+<title>_Destroy&lt;spoe::frame::Notify&gt; (1 samples, 0.03%)</title><rect x="1090.9" y="277" width="0.7" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1093.91" y="287.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::run_tasks (107 samples, 3.22%)</title><rect x="1038.7" y="725" width="76.5" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1041.69" y="735.5" >seastar:..</text>
+</g>
+<g >
+<title>any (2 samples, 0.06%)</title><rect x="1083.8" y="229" width="1.4" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1086.75" y="239.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::do_recv_some (4 samples, 0.12%)</title><rect x="1041.5" y="549" width="2.9" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1044.55" y="559.5" ></text>
+</g>
+<g >
+<title>~future (2 samples, 0.06%)</title><rect x="1093.1" y="661" width="1.4" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="1096.05" y="671.5" ></text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1090.9" y="69" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1093.91" y="79.5" ></text>
+</g>
+<g >
+<title>__pthread_sigmask (3 samples, 0.09%)</title><rect x="1123.1" y="709" width="2.1" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1126.10" y="719.5" ></text>
+</g>
+<g >
+<title>seastar::smp::configure (253 samples, 7.60%)</title><rect x="1014.4" y="773" width="181.0" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="1017.36" y="783.5" >seastar::smp::configure</text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.03%)</title><rect x="1194.6" y="725" width="0.8" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1197.63" y="735.5" ></text>
+</g>
+<g >
+<title>_M_find_node_tr&lt;std::basic_string_view&lt;char&gt; &gt; (1 samples, 0.03%)</title><rect x="1058.7" y="373" width="0.7" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1061.72" y="383.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel (12 samples, 0.36%)</title><rect x="1105.2" y="677" width="8.6" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1108.21" y="687.5" ></text>
+</g>
+<g >
+<title>MMDB_lookup_sockaddr (31 samples, 0.93%)</title><rect x="1059.4" y="437" width="22.2" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="1062.43" y="447.5" >M..</text>
+</g>
+<g >
+<title>_M_range_initialize_n&lt;const spoe::frame::AckVar*, const spoe::frame::AckVar*&gt; (1 samples, 0.03%)</title><rect x="1086.6" y="453" width="0.7" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1089.62" y="463.5" ></text>
+</g>
+<g >
+<title>future_state (2 samples, 0.06%)</title><rect x="1083.8" y="261" width="1.4" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1086.75" y="271.5" ></text>
+</g>
+<g >
+<title>seastar::pollable_fd_state::write_all (18 samples, 0.54%)</title><rect x="1147.4" y="645" width="12.9" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1150.42" y="655.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::smp_pollfn::poll (17 samples, 0.51%)</title><rect x="1166.7" y="725" width="12.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1169.74" y="735.5" ></text>
+</g>
+<g >
+<title>decode (2 samples, 0.06%)</title><rect x="1088.0" y="453" width="1.5" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="1091.05" y="463.5" ></text>
+</g>
+<g >
+<title>append_name (8 samples, 0.24%)</title><rect x="1047.3" y="453" width="5.7" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1050.27" y="463.5" ></text>
+</g>
+<g >
+<title>~vector (1 samples, 0.03%)</title><rect x="1162.4" y="597" width="0.8" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1165.44" y="607.5" ></text>
+</g>
+<g >
+<title>timer-15 (1 samples, 0.03%)</title><rect x="2377.8" y="837" width="0.8" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="2380.84" y="847.5" ></text>
+</g>
+<g >
+<title>_M_find_tr&lt;std::basic_string_view&lt;char&gt; &gt; (1 samples, 0.03%)</title><rect x="1058.7" y="405" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1061.72" y="415.5" ></text>
+</g>
+<g >
+<title>then_impl&lt;(anonymous namespace)::process_one_frame (65 samples, 1.95%)</title><rect x="1045.8" y="549" width="46.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1048.84" y="559.5" >then..</text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1048.0" y="357" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1050.99" y="367.5" ></text>
+</g>
+<g >
+<title>seastar::internal::cpu_stall_detector_posix_timer::start_sleep (7 samples, 0.21%)</title><rect x="1030.1" y="741" width="5.0" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="1033.10" y="751.5" ></text>
+</g>
+<g >
+<title>operator new (1 samples, 0.03%)</title><rect x="1041.5" y="533" width="0.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1044.55" y="543.5" ></text>
+</g>
+<g >
+<title>__invoke&lt;(anonymous namespace)::process_one_frame (66 samples, 1.98%)</title><rect x="1045.8" y="613" width="47.3" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="1048.84" y="623.5" >__in..</text>
+</g>
+<g >
+<title>~_Copy_assign_base (1 samples, 0.03%)</title><rect x="1090.9" y="437" width="0.7" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1093.91" y="447.5" ></text>
+</g>
+<g >
+<title>get_if&lt;0, spoe::frame::HaproxyHello, spoe::frame::HaproxyDisconnect, spoe::frame::Notify&gt; (1 samples, 0.03%)</title><rect x="1046.6" y="469" width="0.7" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="1049.56" y="479.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::batch_flush_pollfn::poll (30 samples, 0.90%)</title><rect x="1141.7" y="725" width="21.5" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1144.70" y="735.5" >s..</text>
+</g>
+<g >
+<title>operator new (1 samples, 0.03%)</title><rect x="1047.3" y="325" width="0.7" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1050.27" y="335.5" ></text>
+</g>
+<g >
+<title>allocate (1 samples, 0.03%)</title><rect x="1086.6" y="421" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1089.62" y="431.5" ></text>
+</g>
+<g >
+<title>__atomic_add_dispatch (1 samples, 0.03%)</title><rect x="1081.6" y="373" width="0.7" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1084.61" y="383.5" ></text>
+</g>
+<g >
+<title>timer-9 (2 samples, 0.06%)</title><rect x="2388.6" y="837" width="1.4" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="2391.57" y="847.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.03%)</title><rect x="1194.6" y="709" width="0.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1197.63" y="719.5" ></text>
+</g>
+<g >
+<title>~_Move_ctor_base (1 samples, 0.03%)</title><rect x="1090.9" y="421" width="0.7" height="15.0" fill="rgb(231,124,29)" rx="2" ry="2" />
+<text  x="1093.91" y="431.5" ></text>
+</g>
+<g >
+<title>evaluate_lookup (5 samples, 0.15%)</title><rect x="1055.9" y="453" width="3.5" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="1058.86" y="463.5" ></text>
+</g>
+<g >
+<title>future_invoke&lt;(anonymous namespace)::process_one_frame (66 samples, 1.98%)</title><rect x="1045.8" y="645" width="47.3" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="1048.84" y="655.5" >futu..</text>
+</g>
+<g >
+<title>__printf_buffer (1 samples, 0.03%)</title><rect x="1056.6" y="373" width="0.7" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1059.57" y="383.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (1 samples, 0.03%)</title><rect x="1166.0" y="677" width="0.7" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1169.02" y="687.5" ></text>
+</g>
+<g >
+<title>__visit_invoke (1 samples, 0.03%)</title><rect x="1090.9" y="341" width="0.7" height="15.0" fill="rgb(249,204,49)" rx="2" ry="2" />
+<text  x="1093.91" y="351.5" ></text>
+</g>
+<g >
+<title>timer-13 (4 samples, 0.12%)</title><rect x="2374.3" y="837" width="2.8" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="2377.26" y="847.5" ></text>
+</g>
+<g >
+<title>start_thread (253 samples, 7.60%)</title><rect x="1014.4" y="805" width="181.0" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1017.36" y="815.5" >start_thread</text>
+</g>
+<g >
+<title>~&lt;lambda&gt; (1 samples, 0.03%)</title><rect x="1162.4" y="613" width="0.8" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="1165.44" y="623.5" ></text>
+</g>
+<g >
+<title>__printf_buffer_write (1 samples, 0.03%)</title><rect x="1056.6" y="357" width="0.7" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="1059.57" y="367.5" ></text>
+</g>
+<g >
+<title>seastar::throw_system_error_on (1 samples, 0.03%)</title><rect x="1139.6" y="741" width="0.7" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1142.55" y="751.5" ></text>
+</g>
+<g >
+<title>find (1 samples, 0.03%)</title><rect x="1058.0" y="421" width="0.7" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1061.00" y="431.5" ></text>
+</g>
+<g >
+<title>unique_ptr (1 samples, 0.03%)</title><rect x="1146.0" y="645" width="0.7" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="1148.99" y="655.5" ></text>
+</g>
+<g >
+<title>__do_visit&lt;void, std::__detail::__variant::_Variant_storage&lt;false, spoe::frame::HaproxyHello, spoe::frame::HaproxyDisconnect, spoe::frame::Notify&gt;::_M_reset (1 samples, 0.03%)</title><rect x="1090.9" y="357" width="0.7" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1093.91" y="367.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (1 samples, 0.03%)</title><rect x="1137.4" y="693" width="0.7" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1140.41" y="703.5" ></text>
+</g>
+<g >
+<title>memmove (1 samples, 0.03%)</title><rect x="1084.5" y="197" width="0.7" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1087.47" y="207.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::do_sendmsg (18 samples, 0.54%)</title><rect x="1147.4" y="613" width="12.9" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="1150.42" y="623.5" ></text>
+</g>
+<g >
+<title>__uniq_ptr_impl (1 samples, 0.03%)</title><rect x="1146.0" y="613" width="0.7" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="1148.99" y="623.5" ></text>
+</g>
+<g >
+<title>make_deleter&lt;spoe::SpoaAgent::send_frame (1 samples, 0.03%)</title><rect x="1083.0" y="437" width="0.8" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="1086.04" y="447.5" ></text>
+</g>
+<g >
+<title>evaluate_argument (37 samples, 1.11%)</title><rect x="1055.9" y="469" width="26.4" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1058.86" y="479.5" >e..</text>
+</g>
+<g >
+<title>__do_uninit_copy&lt;std::move_iterator&lt;unsigned char*&gt;, std::move_iterator&lt;unsigned char*&gt;, unsigned char*&gt; (1 samples, 0.03%)</title><rect x="1048.7" y="341" width="0.7" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="1051.70" y="351.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (5 samples, 0.15%)</title><rect x="1189.6" y="677" width="3.6" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1192.63" y="687.5" ></text>
+</g>
+<g >
+<title>operator (1 samples, 0.03%)</title><rect x="1094.5" y="661" width="0.7" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1097.48" y="671.5" ></text>
+</g>
+<g >
+<title>handle_notify (56 samples, 1.68%)</title><rect x="1047.3" y="485" width="40.0" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="1050.27" y="495.5" >han..</text>
+</g>
+<g >
+<title>invoke&lt;(anonymous namespace)::process_one_frame (65 samples, 1.95%)</title><rect x="1045.8" y="533" width="46.5" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="1048.84" y="543.5" >invo..</text>
+</g>
+<g >
+<title>get_right_28_bit_record (13 samples, 0.39%)</title><rect x="1072.3" y="405" width="9.3" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="1075.31" y="415.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::io_queue_submission_pollfn::poll (5 samples, 0.15%)</title><rect x="1163.2" y="725" width="3.5" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="1166.16" y="735.5" ></text>
+</g>
+<g >
+<title>_M_find_before_node (1 samples, 0.03%)</title><rect x="1058.0" y="373" width="0.7" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="1061.00" y="383.5" ></text>
+</g>
+<g >
+<title>~variant (1 samples, 0.03%)</title><rect x="1090.9" y="485" width="0.7" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1093.91" y="495.5" ></text>
+</g>
+<g >
+<title>process_one_frame (5 samples, 0.15%)</title><rect x="1040.8" y="645" width="3.6" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="1043.83" y="655.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::add_task (2 samples, 0.06%)</title><rect x="1098.1" y="693" width="1.4" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1101.06" y="703.5" ></text>
+</g>
+<g >
+<title>move_it (1 samples, 0.03%)</title><rect x="1084.5" y="213" width="0.7" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1087.47" y="223.5" ></text>
+</g>
+<g >
+<title>operator (66 samples, 1.98%)</title><rect x="1045.8" y="661" width="47.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1048.84" y="671.5" >oper..</text>
+</g>
+<g >
+<title>__uniq_ptr_data (1 samples, 0.03%)</title><rect x="1146.0" y="629" width="0.7" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="1148.99" y="639.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::lowres_timer_pollfn::exit_interrupt_mode (1 samples, 0.03%)</title><rect x="1122.4" y="725" width="0.7" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1125.38" y="735.5" ></text>
+</g>
+<g >
+<title>seastar::alien::instance::poll_queues (2 samples, 0.06%)</title><rect x="1167.5" y="709" width="1.4" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1170.45" y="719.5" ></text>
+</g>
+<g >
+<title>malloc.localalias (4 samples, 0.12%)</title><rect x="1102.4" y="677" width="2.8" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1105.35" y="687.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;bool  (75 samples, 2.25%)</title><rect x="1140.3" y="741" width="53.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1143.27" y="751.5" >std::..</text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1162.4" y="517" width="0.8" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1165.44" y="527.5" ></text>
+</g>
+<g >
+<title>_M_allocate (2 samples, 0.06%)</title><rect x="1089.5" y="453" width="1.4" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1092.48" y="463.5" ></text>
+</g>
+<g >
+<title>_M_range_insert&lt;unsigned char*&gt; (3 samples, 0.09%)</title><rect x="1047.3" y="405" width="2.1" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1050.27" y="415.5" ></text>
+</g>
+<g >
+<title>epoll_pwait (2 samples, 0.06%)</title><rect x="1130.3" y="693" width="1.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1133.25" y="703.5" ></text>
+</g>
+<g >
+<title>__uninitialized_copy_a&lt;std::move_iterator&lt;unsigned char*&gt;, std::move_iterator&lt;unsigned char*&gt;, unsigned char*, unsigned char&gt; (1 samples, 0.03%)</title><rect x="1048.7" y="373" width="0.7" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1051.70" y="383.5" ></text>
+</g>
+<g >
+<title>~_Vector_base (1 samples, 0.03%)</title><rect x="1162.4" y="581" width="0.8" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1165.44" y="591.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::kernel_submit_work (18 samples, 0.54%)</title><rect x="1180.3" y="725" width="12.9" height="15.0" fill="rgb(219,66,16)" rx="2" ry="2" />
+<text  x="1183.33" y="735.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel_arch_end (15 samples, 0.45%)</title><rect x="1149.6" y="565" width="10.7" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1152.57" y="575.5" ></text>
+</g>
+<g >
+<title>insert&lt;unsigned char*&gt; (1 samples, 0.03%)</title><rect x="1053.0" y="421" width="0.7" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="1055.99" y="431.5" ></text>
+</g>
+<g >
+<title>insert&lt;char const*&gt; (5 samples, 0.15%)</title><rect x="1049.4" y="437" width="3.6" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1052.42" y="447.5" ></text>
+</g>
+<g >
+<title>get_left_28_bit_record (15 samples, 0.45%)</title><rect x="1061.6" y="405" width="10.7" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1064.58" y="415.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::io_queue_submission_pollfn::try_enter_interrupt_mode (1 samples, 0.03%)</title><rect x="1121.7" y="725" width="0.7" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="1124.67" y="735.5" ></text>
+</g>
+<g >
+<title>reactor-15 (255 samples, 7.66%)</title><rect x="1012.9" y="837" width="182.5" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="1015.93" y="847.5" >reactor-15</text>
+</g>
+<g >
+<title>_S_add_ref (1 samples, 0.03%)</title><rect x="1081.6" y="405" width="0.7" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1084.61" y="415.5" ></text>
+</g>
+<g >
+<title>snprintf (1 samples, 0.03%)</title><rect x="1056.6" y="421" width="0.7" height="15.0" fill="rgb(253,220,52)" rx="2" ry="2" />
+<text  x="1059.57" y="431.5" ></text>
+</g>
+<g >
+<title>reactor-3 (290 samples, 8.72%)</title><rect x="1306.2" y="837" width="207.5" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="1309.23" y="847.5" >reactor-3</text>
+</g>
+<g >
+<title>write (1 samples, 0.03%)</title><rect x="1085.9" y="453" width="0.7" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1088.90" y="463.5" ></text>
+</g>
+<g >
+<title>get (5 samples, 0.15%)</title><rect x="1040.8" y="613" width="3.6" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1043.83" y="623.5" ></text>
+</g>
+<g >
+<title>~vector (1 samples, 0.03%)</title><rect x="1090.9" y="133" width="0.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1093.91" y="143.5" ></text>
+</g>
+<g >
+<title>operator delete (1 samples, 0.03%)</title><rect x="1162.4" y="501" width="0.8" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1165.44" y="511.5" ></text>
+</g>
+<g >
+<title>timer-2 (7 samples, 0.21%)</title><rect x="2378.6" y="837" width="5.0" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="2381.55" y="847.5" ></text>
+</g>
+<g >
+<title>index (1 samples, 0.03%)</title><rect x="1046.6" y="453" width="0.7" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1049.56" y="463.5" ></text>
+</g>
+<g >
+<title>encode_to_vec (3 samples, 0.09%)</title><rect x="1047.3" y="437" width="2.1" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1050.27" y="447.5" ></text>
+</g>
+<g >
+<title>_M_allocate (2 samples, 0.06%)</title><rect x="1053.7" y="389" width="1.4" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1056.71" y="399.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::wait_and_process (13 samples, 0.39%)</title><rect x="1128.8" y="709" width="9.3" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="1131.82" y="719.5" ></text>
+</g>
+<g >
+<title>timer-8 (2 samples, 0.06%)</title><rect x="2387.1" y="837" width="1.5" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="2390.14" y="847.5" ></text>
+</g>
+<g >
+<title>reactor-11 (211 samples, 6.34%)</title><rect x="460.7" y="837" width="150.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="463.68" y="847.5" >reactor-11</text>
+</g>
+<g >
+<title>reactor-8 (172 samples, 5.17%)</title><rect x="2133.9" y="837" width="123.0" height="15.0" fill="rgb(253,221,53)" rx="2" ry="2" />
+<text  x="2136.90" y="847.5" >reactor-8</text>
+</g>
+<g >
+<title>destroy_at&lt;spoe::frame::Notify&gt; (1 samples, 0.03%)</title><rect x="1090.9" y="261" width="0.7" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="1093.91" y="271.5" ></text>
+</g>
+<g >
+<title>uninitialized_copy&lt;std::move_iterator&lt;unsigned char*&gt;, unsigned char*&gt; (1 samples, 0.03%)</title><rect x="1051.6" y="373" width="0.7" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="1054.56" y="383.5" ></text>
+</g>
+<g >
+<title>read_exactly (5 samples, 0.15%)</title><rect x="1040.8" y="629" width="3.6" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="1043.83" y="639.5" ></text>
+</g>
+<g >
+<title>packet (1 samples, 0.03%)</title><rect x="1146.0" y="661" width="0.7" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1148.99" y="671.5" ></text>
+</g>
+<g >
+<title>seastar::internal::add_to_flush_poller (1 samples, 0.03%)</title><rect x="1085.2" y="357" width="0.7" height="15.0" fill="rgb(247,196,47)" rx="2" ry="2" />
+<text  x="1088.18" y="367.5" ></text>
+</g>
+<g >
+<title>operator new (1 samples, 0.03%)</title><rect x="1083.0" y="421" width="0.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1086.04" y="431.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (5 samples, 0.15%)</title><rect x="1189.6" y="693" width="3.6" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1192.63" y="703.5" ></text>
+</g>
+<g >
+<title>___timer_settime_new (4 samples, 0.12%)</title><rect x="1035.8" y="709" width="2.9" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="1038.83" y="719.5" ></text>
+</g>
+<g >
+<title>_Destroy&lt;spoe::Message&gt; (1 samples, 0.03%)</title><rect x="1090.9" y="181" width="0.7" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1093.91" y="191.5" ></text>
+</g>
+<g >
+<title>vector (1 samples, 0.03%)</title><rect x="1086.6" y="469" width="0.7" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1089.62" y="479.5" ></text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1090.9" y="85" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1093.91" y="95.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.03%)</title><rect x="1115.2" y="693" width="0.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1118.23" y="703.5" ></text>
+</g>
+<g >
+<title>reactor-1 (240 samples, 7.21%)</title><rect x="125.2" y="837" width="171.7" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="128.17" y="847.5" >reactor-1</text>
+</g>
+<g >
+<title>non-virtual thunk to seastar::net::posix_data_source_impl::allocate_buffer (6 samples, 0.18%)</title><rect x="1100.9" y="693" width="4.3" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1103.92" y="703.5" ></text>
+</g>
+<g >
+<title>seastar::internal::cpu_stall_detector_posix_timer::arm_timer (4 samples, 0.12%)</title><rect x="1035.8" y="725" width="2.9" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1038.83" y="735.5" ></text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1162.4" y="533" width="0.8" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1165.44" y="543.5" ></text>
+</g>
+<g >
+<title>invoke&lt;spoe::SpoaAgent::send_frame (3 samples, 0.09%)</title><rect x="1083.8" y="405" width="2.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1086.75" y="415.5" ></text>
+</g>
+<g >
+<title>find (1 samples, 0.03%)</title><rect x="1058.0" y="405" width="0.7" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1061.00" y="415.5" ></text>
+</g>
+<g >
+<title>invoke&lt;spoe::SpoaAgent::send_frame (3 samples, 0.09%)</title><rect x="1083.8" y="421" width="2.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1086.75" y="431.5" ></text>
+</g>
+<g >
+<title>unsigned long seastar::smp_message_queue::process_queue&lt;4ul, seastar::smp_message_queue::process_completions (2 samples, 0.06%)</title><rect x="1177.5" y="693" width="1.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1180.47" y="703.5" ></text>
+</g>
+<g >
+<title>_M_allocate (1 samples, 0.03%)</title><rect x="1047.3" y="389" width="0.7" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1050.27" y="399.5" ></text>
+</g>
+<g >
+<title>~deleter (1 samples, 0.03%)</title><rect x="1091.6" y="501" width="0.7" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1094.62" y="511.5" ></text>
+</g>
+<g >
+<title>timer-14 (1 samples, 0.03%)</title><rect x="2377.1" y="837" width="0.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="2380.12" y="847.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.03%)</title><rect x="1121.7" y="677" width="0.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1124.67" y="687.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (1 samples, 0.03%)</title><rect x="1115.2" y="725" width="0.7" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1118.23" y="735.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1049.4" y="357" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1052.42" y="367.5" ></text>
+</g>
+<g >
+<title>_M_deallocate (1 samples, 0.03%)</title><rect x="1048.0" y="389" width="0.7" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1050.99" y="399.5" ></text>
+</g>
+<g >
+<title>allocate (1 samples, 0.03%)</title><rect x="1047.3" y="373" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1050.27" y="383.5" ></text>
+</g>
+<g >
+<title>__timerfd_settime (20 samples, 0.60%)</title><rect x="1015.8" y="741" width="14.3" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1018.80" y="751.5" ></text>
+</g>
+<g >
+<title>snapshot (1 samples, 0.03%)</title><rect x="1081.6" y="453" width="0.7" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="1084.61" y="463.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (1 samples, 0.03%)</title><rect x="1034.4" y="725" width="0.7" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1037.39" y="735.5" ></text>
+</g>
+<g >
+<title>satisfy_with_result_of&lt;seastar::future&lt;seastar::temporary_buffer&lt;char&gt; &gt;::then_impl_nrvo&lt;(anonymous namespace)::process_one_frame (70 samples, 2.10%)</title><rect x="1044.4" y="677" width="50.1" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1047.41" y="687.5" >satis..</text>
+</g>
+<g >
+<title>_M_deallocate (1 samples, 0.03%)</title><rect x="1162.4" y="565" width="0.8" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1165.44" y="575.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1053.7" y="373" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1056.71" y="383.5" ></text>
+</g>
+<g >
+<title>distance&lt;char const*&gt; (1 samples, 0.03%)</title><rect x="1052.3" y="405" width="0.7" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="1055.28" y="415.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.03%)</title><rect x="1166.0" y="661" width="0.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1169.02" y="671.5" ></text>
+</g>
+<g >
+<title>_M_deallocate (1 samples, 0.03%)</title><rect x="1090.9" y="101" width="0.7" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1093.91" y="111.5" ></text>
+</g>
+<g >
+<title>seastar::io_queue::poll_io_queue (4 samples, 0.12%)</title><rect x="1163.9" y="709" width="2.8" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1166.87" y="719.5" ></text>
+</g>
+<g >
+<title>handle_frame (63 samples, 1.89%)</title><rect x="1046.6" y="501" width="45.0" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1049.56" y="511.5" >hand..</text>
+</g>
+<g >
+<title>timer-6 (1 samples, 0.03%)</title><rect x="2386.4" y="837" width="0.7" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="2389.42" y="847.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::smp_pollfn::try_enter_interrupt_mode (3 samples, 0.09%)</title><rect x="1126.0" y="725" width="2.1" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="1128.96" y="735.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::signal_pollfn::try_enter_interrupt_mode (4 samples, 0.12%)</title><rect x="1123.1" y="725" width="2.9" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1126.10" y="735.5" ></text>
+</g>
+<g >
+<title>get_categories (1 samples, 0.03%)</title><rect x="1056.6" y="437" width="0.7" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="1059.57" y="447.5" ></text>
+</g>
+<g >
+<title>clear (2 samples, 0.06%)</title><rect x="1093.1" y="629" width="1.4" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="1096.05" y="639.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel_arch_end (2 samples, 0.06%)</title><rect x="1130.3" y="661" width="1.4" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1133.25" y="671.5" ></text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1048.0" y="373" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1050.99" y="383.5" ></text>
+</g>
+<g >
+<title>__invoke_impl&lt;void, std::__detail::__variant::_Variant_storage&lt;false, spoe::frame::HaproxyHello, spoe::frame::HaproxyDisconnect, spoe::frame::Notify&gt;::_M_reset (1 samples, 0.03%)</title><rect x="1090.9" y="309" width="0.7" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1093.91" y="319.5" ></text>
+</g>
+<g >
+<title>insert&lt;unsigned char*&gt; (3 samples, 0.09%)</title><rect x="1047.3" y="421" width="2.1" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="1050.27" y="431.5" ></text>
+</g>
+<g >
+<title>allocate (1 samples, 0.03%)</title><rect x="1085.9" y="405" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1088.90" y="415.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.03%)</title><rect x="1034.4" y="693" width="0.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1037.39" y="703.5" ></text>
+</g>
+<g >
+<title>timer-0 (3 samples, 0.09%)</title><rect x="2370.0" y="837" width="2.1" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="2372.97" y="847.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.03%)</title><rect x="1121.7" y="693" width="0.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1124.67" y="703.5" ></text>
+</g>
+<g >
+<title>__do_uninit_copy&lt;std::move_iterator&lt;unsigned char*&gt;, std::move_iterator&lt;unsigned char*&gt;, unsigned char*&gt; (1 samples, 0.03%)</title><rect x="1051.6" y="357" width="0.7" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="1054.56" y="367.5" ></text>
+</g>
+<g >
+<title>haproxy-spoa-fi (161 samples, 4.84%)</title><rect x="10.0" y="837" width="115.2" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" >haproxy-spoa-fi</text>
+</g>
+<g >
+<title>~_Variant_base (1 samples, 0.03%)</title><rect x="1090.9" y="469" width="0.7" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1093.91" y="479.5" ></text>
+</g>
+<g >
+<title>epoll_pwait (11 samples, 0.33%)</title><rect x="1181.8" y="693" width="7.8" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1184.76" y="703.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.03%)</title><rect x="1137.4" y="661" width="0.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1140.41" y="671.5" ></text>
+</g>
+<g >
+<title>operator new (2 samples, 0.06%)</title><rect x="1089.5" y="389" width="1.4" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1092.48" y="399.5" ></text>
+</g>
+<g >
+<title>timer-10 (1 samples, 0.03%)</title><rect x="2372.1" y="837" width="0.7" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="2375.12" y="847.5" ></text>
+</g>
+<g >
+<title>then_impl&lt;spoe::SpoaAgent::send_frame (3 samples, 0.09%)</title><rect x="1083.8" y="437" width="2.1" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1086.75" y="447.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (1 samples, 0.03%)</title><rect x="1193.9" y="741" width="0.7" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1196.92" y="751.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.03%)</title><rect x="1034.4" y="709" width="0.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1037.39" y="719.5" ></text>
+</g>
+<g >
+<title>reactor-10 (229 samples, 6.88%)</title><rect x="296.9" y="837" width="163.8" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="299.86" y="847.5" >reactor-10</text>
+</g>
+<g >
+<title>~lambda_deleter_impl (1 samples, 0.03%)</title><rect x="1162.4" y="629" width="0.8" height="15.0" fill="rgb(247,196,47)" rx="2" ry="2" />
+<text  x="1165.44" y="639.5" ></text>
+</g>
+<g >
+<title>__uninitialized_move_if_noexcept_a&lt;unsigned char*, unsigned char*, std::allocator&lt;unsigned char&gt; &gt; (1 samples, 0.03%)</title><rect x="1048.7" y="389" width="0.7" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1051.70" y="399.5" ></text>
+</g>
+<g >
+<title>unsigned long seastar::smp_message_queue::process_queue&lt;4ul, seastar::smp_message_queue::process_completions (2 samples, 0.06%)</title><rect x="1126.7" y="693" width="1.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1129.68" y="703.5" ></text>
+</g>
+<g >
+<title>all (3,327 samples, 100%)</title><rect x="10.0" y="853" width="2380.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" ></text>
+</g>
+<g >
+<title>seastar::smp::poll_queues (2 samples, 0.06%)</title><rect x="1126.7" y="709" width="1.4" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="1129.68" y="719.5" ></text>
+</g>
+<g >
+<title>operator (5 samples, 0.15%)</title><rect x="1040.8" y="661" width="3.6" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1043.83" y="671.5" ></text>
+</g>
+<g >
+<title>~Notify (1 samples, 0.03%)</title><rect x="1090.9" y="245" width="0.7" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1093.91" y="255.5" ></text>
+</g>
+<g >
+<title>emplace_back&lt;unsigned char&gt; (2 samples, 0.06%)</title><rect x="1053.7" y="421" width="1.4" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1056.71" y="431.5" ></text>
+</g>
+<g >
+<title>_M_add_ref_copy (1 samples, 0.03%)</title><rect x="1081.6" y="389" width="0.7" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1084.61" y="399.5" ></text>
+</g>
+<g >
+<title>seastar::memory::cpu_pages::drain_cross_cpu_freelist (1 samples, 0.03%)</title><rect x="1141.0" y="725" width="0.7" height="15.0" fill="rgb(244,179,43)" rx="2" ry="2" />
+<text  x="1143.98" y="735.5" ></text>
+</g>
+<g >
+<title>seastar::posix_thread::start_routine (253 samples, 7.60%)</title><rect x="1014.4" y="789" width="181.0" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1017.36" y="799.5" >seastar::posix_thread::..</text>
+</g>
+<g >
+<title>allocate (1 samples, 0.03%)</title><rect x="1086.6" y="405" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1089.62" y="415.5" ></text>
+</g>
+<g >
+<title>set_callback&lt;seastar::bool_class&lt;seastar::stop_iteration_tag&gt; &gt; (1 samples, 0.03%)</title><rect x="1095.2" y="693" width="0.7" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="1098.20" y="703.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1089.5" y="437" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1092.48" y="447.5" ></text>
+</g>
+<g >
+<title>reactor-9 (158 samples, 4.75%)</title><rect x="2256.9" y="837" width="113.1" height="15.0" fill="rgb(246,192,45)" rx="2" ry="2" />
+<text  x="2259.94" y="847.5" >reactor-9</text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.03%)</title><rect x="1193.9" y="709" width="0.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1196.92" y="719.5" ></text>
+</g>
+<g >
+<title>__uninitialized_move_if_noexcept_a&lt;unsigned char*, unsigned char*, std::allocator&lt;unsigned char&gt; &gt; (1 samples, 0.03%)</title><rect x="1051.6" y="405" width="0.7" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1054.56" y="415.5" ></text>
+</g>
+<g >
+<title>reactor-7 (312 samples, 9.38%)</title><rect x="1910.7" y="837" width="223.2" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1913.71" y="847.5" >reactor-7</text>
+</g>
+<g >
+<title>seastar::internal::cpu_stall_detector::report_suppressions (1 samples, 0.03%)</title><rect x="1035.1" y="725" width="0.7" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1038.11" y="735.5" ></text>
+</g>
+<g >
+<title>reserve (2 samples, 0.06%)</title><rect x="1089.5" y="469" width="1.4" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="1092.48" y="479.5" ></text>
+</g>
+<g >
+<title>~_Copy_ctor_base (1 samples, 0.03%)</title><rect x="1090.9" y="405" width="0.7" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="1093.91" y="415.5" ></text>
+</g>
+<g >
+<title>__invoke_impl&lt;seastar::future&lt;seastar::temporary_buffer&lt;char&gt; &gt;, seastar::input_stream&lt;char&gt;::read_exactly (1 samples, 0.03%)</title><rect x="1094.5" y="597" width="0.7" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1097.48" y="607.5" ></text>
+</g>
+<g >
+<title>parse (5 samples, 0.15%)</title><rect x="1087.3" y="485" width="3.6" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1090.33" y="495.5" ></text>
+</g>
+<g >
+<title>packet (1 samples, 0.03%)</title><rect x="1085.9" y="421" width="0.7" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1088.90" y="431.5" ></text>
+</g>
+<g >
+<title>reactor-6 (194 samples, 5.83%)</title><rect x="1771.9" y="837" width="138.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1774.93" y="847.5" >reactor-6</text>
+</g>
+<g >
+<title>std::chrono::_V2::system_clock::now (2 samples, 0.06%)</title><rect x="1115.9" y="725" width="1.5" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1118.95" y="735.5" ></text>
+</g>
+<g >
+<title>seastar::continuation&lt;seastar::internal::promise_base_with_type&lt;seastar::temporary_buffer&lt;char&gt; &gt;, seastar::reactor::do_recv_some (22 samples, 0.66%)</title><rect x="1099.5" y="709" width="15.7" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1102.49" y="719.5" ></text>
+</g>
+<g >
+<title>timer-11 (1 samples, 0.03%)</title><rect x="2372.8" y="837" width="0.7" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="2375.83" y="847.5" ></text>
+</g>
+<g >
+<title>deleter (1 samples, 0.03%)</title><rect x="1094.5" y="565" width="0.7" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="1097.48" y="575.5" ></text>
+</g>
+<g >
+<title>~_Variant_storage (1 samples, 0.03%)</title><rect x="1090.9" y="389" width="0.7" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="1093.91" y="399.5" ></text>
+</g>
+<g >
+<title>~deleter (1 samples, 0.03%)</title><rect x="1092.3" y="565" width="0.8" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1095.34" y="575.5" ></text>
+</g>
+<g >
+<title>_M_construct&lt;seastar::promise&lt;void&gt; &gt; (2 samples, 0.06%)</title><rect x="1083.8" y="341" width="1.4" height="15.0" fill="rgb(230,117,27)" rx="2" ry="2" />
+<text  x="1086.75" y="351.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.03%)</title><rect x="1115.2" y="709" width="0.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1118.23" y="719.5" ></text>
+</g>
+<g >
+<title>operator (3 samples, 0.09%)</title><rect x="1083.8" y="389" width="2.1" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1086.75" y="399.5" ></text>
+</g>
+<g >
+<title>reactor-14 (207 samples, 6.22%)</title><rect x="864.9" y="837" width="148.0" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="867.85" y="847.5" >reactor-14</text>
+</g>
+<g >
+<title>seastar::reactor::syscall_pollfn::poll (2 samples, 0.06%)</title><rect x="1178.9" y="725" width="1.4" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1181.90" y="735.5" ></text>
+</g>
+<g >
+<title>allocate (1 samples, 0.03%)</title><rect x="1047.3" y="357" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1050.27" y="367.5" ></text>
+</g>
+<g >
+<title>match (1 samples, 0.03%)</title><rect x="1058.7" y="437" width="0.7" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1061.72" y="447.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1053.7" y="357" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1056.71" y="367.5" ></text>
+</g>
+<g >
+<title>future_state_base (2 samples, 0.06%)</title><rect x="1083.8" y="245" width="1.4" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="1086.75" y="255.5" ></text>
+</g>
+<g >
+<title>reactor-2 (155 samples, 4.66%)</title><rect x="1195.4" y="837" width="110.8" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1198.35" y="847.5" >reactor-2</text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::wait_and_process (16 samples, 0.48%)</title><rect x="1181.8" y="709" width="11.4" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="1184.76" y="719.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel (11 samples, 0.33%)</title><rect x="1181.8" y="677" width="7.8" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1184.76" y="687.5" ></text>
+</g>
+<g >
+<title>~Message (1 samples, 0.03%)</title><rect x="1090.9" y="149" width="0.7" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1093.91" y="159.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::do_run (253 samples, 7.60%)</title><rect x="1014.4" y="757" width="181.0" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="1017.36" y="767.5" >seastar::reactor::do_run</text>
+</g>
+<g >
+<title>push_back (2 samples, 0.06%)</title><rect x="1053.7" y="437" width="1.4" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1056.71" y="447.5" ></text>
+</g>
+<g >
+<title>seastar::syscall_work_queue::complete (1 samples, 0.03%)</title><rect x="1179.6" y="709" width="0.7" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="1182.61" y="719.5" ></text>
+</g>
+<g >
+<title>_M_realloc_append&lt;unsigned char const&amp;&gt; (2 samples, 0.06%)</title><rect x="1053.7" y="405" width="1.4" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1056.71" y="415.5" ></text>
+</g>
+<g >
+<title>put (24 samples, 0.72%)</title><rect x="1146.0" y="677" width="17.2" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1148.99" y="687.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1089.5" y="421" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1092.48" y="431.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::sendmsg (18 samples, 0.54%)</title><rect x="1147.4" y="629" width="12.9" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="1150.42" y="639.5" ></text>
+</g>
+<g >
+<title>__libc_sendmsg (16 samples, 0.48%)</title><rect x="1148.9" y="597" width="11.4" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1151.85" y="607.5" ></text>
+</g>
+<g >
+<title>encode_agent_ack (12 samples, 0.36%)</title><rect x="1047.3" y="469" width="8.6" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1050.27" y="479.5" ></text>
+</g>
+<g >
+<title>_M_allocate (1 samples, 0.03%)</title><rect x="1086.6" y="437" width="0.7" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1089.62" y="447.5" ></text>
+</g>
+<g >
+<title>uninitialized_copy&lt;char const*, unsigned char*&gt; (1 samples, 0.03%)</title><rect x="1050.8" y="389" width="0.8" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1053.85" y="399.5" ></text>
+</g>
+<g >
+<title>find&lt;std::basic_string_view&lt;char&gt; &gt; (1 samples, 0.03%)</title><rect x="1058.7" y="421" width="0.7" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1061.72" y="431.5" ></text>
+</g>
+<g >
+<title>__atomic_add (1 samples, 0.03%)</title><rect x="1081.6" y="357" width="0.7" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="1084.61" y="367.5" ></text>
+</g>
+<g >
+<title>__timerfd_settime (8 samples, 0.24%)</title><rect x="1131.7" y="677" width="5.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1134.68" y="687.5" ></text>
+</g>
+<g >
+<title>__uninitialized_copy_a&lt;char const*, char const*, unsigned char*, unsigned char&gt; (1 samples, 0.03%)</title><rect x="1050.8" y="405" width="0.8" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="1053.85" y="415.5" ></text>
+</g>
+<g >
+<title>load (1 samples, 0.03%)</title><rect x="1081.6" y="421" width="0.7" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="1084.61" y="431.5" ></text>
+</g>
+<g >
+<title>packet (1 samples, 0.03%)</title><rect x="1085.9" y="437" width="0.7" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1088.90" y="447.5" ></text>
+</g>
+<g >
+<title>operator (1 samples, 0.03%)</title><rect x="1090.9" y="293" width="0.7" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1093.91" y="303.5" ></text>
+</g>
+<g >
+<title>move_it (2 samples, 0.06%)</title><rect x="1083.8" y="277" width="1.4" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1086.75" y="287.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (1 samples, 0.03%)</title><rect x="1121.7" y="709" width="0.7" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1124.67" y="719.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::get_epoll_future (1 samples, 0.03%)</title><rect x="1043.7" y="517" width="0.7" height="15.0" fill="rgb(223,82,19)" rx="2" ry="2" />
+<text  x="1046.69" y="527.5" ></text>
+</g>
+<g >
+<title>timer-5 (4 samples, 0.12%)</title><rect x="2383.6" y="837" width="2.8" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="2386.56" y="847.5" ></text>
+</g>
+<g >
+<title>operator delete (2 samples, 0.06%)</title><rect x="1039.4" y="709" width="1.4" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1042.40" y="719.5" ></text>
+</g>
+<g >
+<title>_Construct&lt;seastar::promise&lt;void&gt;, seastar::promise&lt;void&gt; &gt; (2 samples, 0.06%)</title><rect x="1083.8" y="309" width="1.4" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="1086.75" y="319.5" ></text>
+</g>
+<g >
+<title>operator new (1 samples, 0.03%)</title><rect x="1085.9" y="373" width="0.7" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1088.90" y="383.5" ></text>
+</g>
+<g >
+<title>seastar::net::posix_data_source_impl::get (5 samples, 0.15%)</title><rect x="1040.8" y="597" width="3.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1043.83" y="607.5" ></text>
+</g>
+<g >
+<title>___timer_settime_new (6 samples, 0.18%)</title><rect x="1030.1" y="725" width="4.3" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="1033.10" y="735.5" ></text>
+</g>
+<g >
+<title>timer-12 (1 samples, 0.03%)</title><rect x="2373.5" y="837" width="0.8" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="2376.55" y="847.5" ></text>
+</g>
+<g >
+<title>seastar::continuation&lt;seastar::internal::promise_base_with_type&lt;seastar::temporary_buffer&lt;char&gt; &gt;, seastar::net::posix_data_source_impl::get (5 samples, 0.15%)</title><rect x="1095.9" y="709" width="3.6" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="1098.92" y="719.5" ></text>
+</g>
+<g >
+<title>_Destroy&lt;spoe::Message*, spoe::Message&gt; (1 samples, 0.03%)</title><rect x="1090.9" y="213" width="0.7" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1093.91" y="223.5" ></text>
+</g>
+<g >
+<title>operator delete (1 samples, 0.03%)</title><rect x="1048.0" y="325" width="0.7" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1050.99" y="335.5" ></text>
+</g>
+<g >
+<title>seastar::smp::poll_queues (14 samples, 0.42%)</title><rect x="1168.9" y="709" width="10.0" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="1171.88" y="719.5" ></text>
+</g>
+<g >
+<title>read_name (2 samples, 0.06%)</title><rect x="1088.0" y="469" width="1.5" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1091.05" y="479.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1049.4" y="373" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1052.42" y="383.5" ></text>
+</g>
+<g >
+<title>send_frame (6 samples, 0.18%)</title><rect x="1082.3" y="469" width="4.3" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1085.32" y="479.5" ></text>
+</g>
+<g >
+<title>seastar::reactor::run_some_tasks (115 samples, 3.46%)</title><rect x="1035.1" y="741" width="82.3" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="1038.11" y="751.5" >seastar::..</text>
+</g>
+<g >
+<title>do_flush (25 samples, 0.75%)</title><rect x="1145.3" y="693" width="17.9" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1148.28" y="703.5" ></text>
+</g>
+<g >
+<title>allocate (1 samples, 0.03%)</title><rect x="1086.6" y="389" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1089.62" y="399.5" ></text>
+</g>
+<g >
+<title>_M_range_insert&lt;unsigned char*&gt; (1 samples, 0.03%)</title><rect x="1053.0" y="405" width="0.7" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1055.99" y="415.5" ></text>
+</g>
+<g >
+<title>__memcpy_avx512_unaligned_erms (1 samples, 0.03%)</title><rect x="1050.8" y="373" width="0.8" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="1053.85" y="383.5" ></text>
+</g>
+<g >
+<title>_Tuple_impl (1 samples, 0.03%)</title><rect x="1146.0" y="581" width="0.7" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1148.99" y="591.5" ></text>
+</g>
+<g >
+<title>allocate (2 samples, 0.06%)</title><rect x="1053.7" y="341" width="1.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1056.71" y="351.5" ></text>
+</g>
+<g >
+<title>_M_construct&lt;seastar::promise&lt;void&gt; &gt; (2 samples, 0.06%)</title><rect x="1083.8" y="325" width="1.4" height="15.0" fill="rgb(230,117,27)" rx="2" ry="2" />
+<text  x="1086.75" y="335.5" ></text>
+</g>
+<g >
+<title>allocate (1 samples, 0.03%)</title><rect x="1047.3" y="341" width="0.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1050.27" y="351.5" ></text>
+</g>
+<g >
+<title>invoke&lt;(anonymous namespace)::handle_connection (5 samples, 0.15%)</title><rect x="1040.8" y="677" width="3.6" height="15.0" fill="rgb(245,188,44)" rx="2" ry="2" />
+<text  x="1043.83" y="687.5" ></text>
+</g>
+<g >
+<title>__clone3 (253 samples, 7.60%)</title><rect x="1014.4" y="821" width="181.0" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1017.36" y="831.5" >__clone3</text>
+</g>
+<g >
+<title>begin_frame (3 samples, 0.09%)</title><rect x="1053.0" y="453" width="2.1" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1055.99" y="463.5" ></text>
+</g>
+<g >
+<title>deallocate (1 samples, 0.03%)</title><rect x="1090.9" y="53" width="0.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1093.91" y="63.5" ></text>
+</g>
+<g >
+<title>seastar::reactor_backend_epoll::wait_and_process_events (13 samples, 0.39%)</title><rect x="1128.8" y="725" width="9.3" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1131.82" y="735.5" ></text>
+</g>
+<g >
+<title>reactor-4 (250 samples, 7.51%)</title><rect x="1513.7" y="837" width="178.8" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1516.69" y="847.5" >reactor-4</text>
+</g>
+<g >
+<title>temporary_buffer (1 samples, 0.03%)</title><rect x="1094.5" y="581" width="0.7" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="1097.48" y="591.5" ></text>
+</g>
+<g >
+<title>invoke&lt;seastar::input_stream&lt;char&gt;::read_exactly (1 samples, 0.03%)</title><rect x="1094.5" y="629" width="0.7" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="1097.48" y="639.5" ></text>
+</g>
+<g >
+<title>_M_locate (1 samples, 0.03%)</title><rect x="1058.0" y="389" width="0.7" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="1061.00" y="399.5" ></text>
+</g>
+<g >
+<title>~lambda_deleter_impl (4 samples, 0.12%)</title><rect x="1160.3" y="645" width="2.9" height="15.0" fill="rgb(247,196,47)" rx="2" ry="2" />
+<text  x="1163.30" y="655.5" ></text>
+</g>
+<g >
+<title>promise (2 samples, 0.06%)</title><rect x="1083.8" y="293" width="1.4" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="1086.75" y="303.5" ></text>
+</g>
+<g >
+<title>~_Vector_base (1 samples, 0.03%)</title><rect x="1090.9" y="117" width="0.7" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1093.91" y="127.5" ></text>
+</g>
+<g >
+<title>__invoke_r&lt;void, std::__detail::__variant::_Variant_storage&lt;false, spoe::frame::HaproxyHello, spoe::frame::HaproxyDisconnect, spoe::frame::Notify&gt;::_M_reset (1 samples, 0.03%)</title><rect x="1090.9" y="325" width="0.7" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="1093.91" y="335.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel (2 samples, 0.06%)</title><rect x="1130.3" y="677" width="1.4" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1133.25" y="687.5" ></text>
+</g>
+<g >
+<title>__pthread_sigmask (2 samples, 0.06%)</title><rect x="1120.2" y="725" width="1.5" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1123.24" y="735.5" ></text>
+</g>
+<g >
+<title>seastar::smp_message_queue::flush_response_batch (5 samples, 0.15%)</title><rect x="1173.2" y="693" width="3.6" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1176.17" y="703.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.03%)</title><rect x="1166.0" y="645" width="0.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1169.02" y="655.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (2 samples, 0.06%)</title><rect x="1115.9" y="709" width="1.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1118.95" y="719.5" ></text>
+</g>
+</g>
+</svg>
